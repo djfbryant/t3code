@@ -1,3 +1,5 @@
+import type { ProjectMonogramColor } from "@t3tools/contracts/settings";
+
 /** Visual identity tokens for a generated project badge. */
 export interface ProjectIdentity {
   readonly monogram: string;
@@ -33,10 +35,21 @@ function projectHue(projectName: string): number {
 }
 
 /** Derives the stable monogram and generated colors used when a project has no icon. */
-export function deriveProjectIdentity(projectName: string): ProjectIdentity {
+export function deriveProjectIdentity(
+  projectName: string,
+  color?: ProjectMonogramColor,
+): ProjectIdentity {
+  const monogram = projectMonogram(projectName);
+  if (color === "accent") {
+    return {
+      monogram,
+      background: "var(--primary)",
+      highlight: "var(--primary)",
+    };
+  }
   const hue = projectHue(projectName);
   return {
-    monogram: projectMonogram(projectName),
+    monogram,
     background: `hsl(${hue} 48% 36%)`,
     highlight: `hsl(${(hue + 24) % 360} 58% 48%)`,
   };

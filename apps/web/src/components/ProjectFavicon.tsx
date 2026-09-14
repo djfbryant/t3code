@@ -9,6 +9,7 @@ import type { ComponentType } from "react";
 import { lazy, Suspense, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { projectFaviconUrlAtom } from "../state/assets";
+import { useClientSettings } from "../hooks/useSettings";
 import { deriveProjectIdentity } from "../projectIdentity";
 import { projectIconColorClassName } from "../projectIconColors";
 import { cn } from "~/lib/utils";
@@ -110,8 +111,9 @@ function ProjectFaviconFallback({
   readonly emoji?: string | undefined;
   readonly projectName?: string | undefined;
 }) {
+  const projectMonogramColor = useClientSettings((settings) => settings.projectMonogramColor);
   if (projectName && projectName.trim().length > 0) {
-    const identity = deriveProjectIdentity(projectName);
+    const identity = deriveProjectIdentity(projectName, projectMonogramColor);
     return (
       <svg
         aria-hidden="true"
@@ -129,7 +131,7 @@ function ProjectFaviconFallback({
           x="8"
           y="10.8"
           textAnchor="middle"
-          fill="white"
+          fill={projectMonogramColor === "accent" ? "var(--primary-foreground)" : "white"}
           className="font-mono"
           fontSize="8.25"
           fontWeight="700"

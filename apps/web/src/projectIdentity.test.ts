@@ -31,4 +31,27 @@ describe("deriveProjectIdentity", () => {
 
     expect(colors.size).toBeGreaterThan(1);
   });
+
+  it("preserves hash colors when the color is omitted or automatic", () => {
+    const omitted = deriveProjectIdentity("Nebula");
+    const automatic = deriveProjectIdentity("Nebula", "auto");
+
+    expect(automatic.background).toBe(omitted.background);
+    expect(automatic.highlight).toBe(omitted.highlight);
+    expect(automatic.monogram).toBe(omitted.monogram);
+  });
+
+  it("uses the theme action color for both backgrounds in accent mode", () => {
+    const identity = deriveProjectIdentity("Nebula", "accent");
+
+    expect(identity.background).toBe("var(--primary)");
+    expect(identity.highlight).toBe("var(--primary)");
+  });
+
+  it("keeps the monogram glyph unchanged in accent mode", () => {
+    expect(deriveProjectIdentity("Nebula", "accent").monogram).toBe(
+      deriveProjectIdentity("Nebula").monogram,
+    );
+    expect(deriveProjectIdentity("m7forge", "accent").monogram).toBe("M7");
+  });
 });

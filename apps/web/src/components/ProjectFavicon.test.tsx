@@ -6,6 +6,7 @@ import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon"
 const testState = vi.hoisted(() => ({
   faviconUrl: "https://environment.test/api/assets/token-a/v1-20-favicon.svg",
   lastTarget: null as unknown,
+  projectMonogramColor: "auto" as string,
 }));
 
 const hooks = vi.hoisted(() => {
@@ -65,6 +66,12 @@ vi.mock("../state/assets", () => ({
     testState.lastTarget = input;
   },
 }));
+vi.mock("../hooks/useSettings", () => ({
+  useClientSettings: (selector?: (settings: { projectMonogramColor: string }) => unknown) => {
+    const settings = { projectMonogramColor: testState.projectMonogramColor };
+    return selector ? selector(settings) : settings;
+  },
+}));
 
 import { ProjectFavicon, type ProjectFaviconProject } from "./ProjectFavicon";
 
@@ -116,10 +123,37 @@ function renderImage(
   return Component(props);
 }
 
+type MonogramSvgElement = ReactElement<{
+  readonly style?: { readonly backgroundColor?: string; readonly backgroundImage?: string };
+  readonly children: [
+    ReactElement<{ readonly fill?: string; readonly children?: unknown }>,
+    ReactElement,
+  ];
+}>;
+
+function renderMissingImageMonogram(title: string): MonogramSvgElement {
+  testState.faviconUrl = `https://environment.test/api/assets/token/${PROJECT_FAVICON_FALLBACK_MARKER}`;
+  hooks.beginRender();
+  const fallbackElement = ProjectFavicon({
+    project: makeProject({ workspaceRoot: "/workspace/monogram", title }),
+  }) as ReactElement<{
+    readonly projectName?: string;
+    readonly className?: string;
+    readonly icon: ComponentType<{ className?: string }>;
+  }>;
+  const Fallback = fallbackElement.type as (
+    props: typeof fallbackElement.props,
+  ) => MonogramSvgElement;
+  const svg = Fallback(fallbackElement.props);
+  hooks.reset();
+  return svg;
+}
+
 describe("ProjectFavicon", () => {
   beforeEach(() => {
     hooks.reset();
     testState.faviconUrl = "https://environment.test/api/assets/token-a/v1-20-favicon.svg";
+    testState.projectMonogramColor = "auto";
   });
 
   it("shows the project monogram when no favicon exists", () => {
@@ -215,5 +249,57 @@ describe("ProjectFavicon", () => {
       cwd: "/workspace-test",
       faviconPath: "brand/icon.svg",
     });
+  });
+
+  it("uses hash colors and a white glyph for missing favicons in automatic mode", () => {
+    testState.projectMonogramColor = "auto";
+    const svg = renderMissingImageMonogram("analytics-db");
+
+    expect(svg.props.style?.backgroundColor).toContain("hsl(");
+    expect(svg.props.children[0].props.fill).toBe("white");
+  });
+
+  it("uses the theme action color for missing favicons in accent mode", () => {
+    testState.projectMonogramColor = "accent";
+    const svg = renderMissingImageMonogram("analytics-db");
+
+    expect(svg.props.style?.backgroundColor).toBe("var(--primary)");
+    expect(svg.props.style?.backgroundImage).toContain("var(--primary)");
+    expect(svg.props.children[0].props.fill).toBe("var(--primary-foreground)");
+  });
+
+  it("keeps the same monogram glyph in both color modes", () => {
+    testState.projectMonogramColor = "auto";
+    const automatic = renderMissingImageMonogram("analytics-db");
+    testState.projectMonogramColor = "accent";
+    const accent = renderMissingImageMonogram("analytics-db");
+
+    expect(accent.props.children[0].props.children).toBe(
+      automatic.props.children[0].props.children,
+    );
+  });
+
+  it("uses the theme action color for failed favicons in accent mode", () => {
+    testState.projectMonogramColor = "accent";
+    const { Component, props } = resolveImageComponent();
+    renderImage(Component, props).props.children[2]?.props.onLoad?.();
+    renderImage(Component, props).props.children[1]?.props.onError?.();
+
+    const afterError = renderImage(Component, props).props.children;
+    const fallbackElement = afterError[0] as ReactElement<{
+      readonly projectName?: string;
+      readonly className?: string;
+      readonly icon: ComponentType<{ className?: string }>;
+    }>;
+    expect(fallbackElement).not.toBeNull();
+    hooks.beginRender();
+    const Fallback = fallbackElement.type as (
+      props: typeof fallbackElement.props,
+    ) => MonogramSvgElement;
+    const svg = Fallback(fallbackElement.props);
+    hooks.reset();
+
+    expect(svg.props.style?.backgroundColor).toBe("var(--primary)");
+    expect(svg.props.children[0].props.fill).toBe("var(--primary-foreground)");
   });
 });
