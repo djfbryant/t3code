@@ -67,7 +67,10 @@ Developer ID certificate never shares a job with PR code:
   PR commit, as data, so the signed app's passkey entitlement matches the bundle. A PR that changes
   packaging must use the `channel=preview` release train above instead.
 
-The signed bundle is only ever copied into the app, never executed, on the signing runner. The
+Before handing the bundle to the signing runner, the trusted workflow validates its ZIP entries
+and accepts only regular files under `server/dist` and `desktop/dist-electron`. The artifact cannot
+overwrite packaging code or installed dependencies. The bundle is copied into the app, never executed,
+on the signing runner. The
 `pull_request_target` cleanup job in the publish workflow removes the download when the PR closes or
 loses the label, and never checks out PR code.
 

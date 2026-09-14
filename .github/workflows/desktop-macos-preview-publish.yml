@@ -50,7 +50,7 @@ jobs:
     steps:
       - id: pr
         name: Resolve the pull request behind the build
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const run = context.payload.workflow_run;
@@ -65,8 +65,9 @@ jobs:
               run_id: run.id,
               per_page: 100,
             });
-            if (!artifacts.some((artifact) => artifact.name === "js-bundle" && !artifact.expired)) {
-              core.info("The build run produced no js-bundle artifact. Skipping.");
+            const bundles = artifacts.filter((artifact) => artifact.name === "js-bundle" && !artifact.expired);
+            if (bundles.length !== 1) {
+              core.info(`Expected one js-bundle artifact; found ${bundles.length}. Skipping.`);
               core.setOutput("eligible", "false");
               return;
             }
@@ -114,6 +115,7 @@ jobs:
               return;
             }
 
+            core.setOutput("artifact_id", String(bundles[0].id));
             core.setOutput("eligible", "true");
             core.setOutput("pr_number", String(pull.number));
             core.setOutput("head_sha", pull.head.sha);
@@ -124,7 +126,7 @@ jobs:
       - id: vouch
         name: Check PR author trust
         if: steps.pr.outputs.eligible == 'true'
-        uses: mitchellh/vouch/action/check-user@v1
+        uses: mitchellh/vouch/action/check-user@d66fa29a64600490892131ad87597c30c91fcac4 # v1
         with:
           user: ${{ steps.pr.outputs.author }}
           allow-fail: true
@@ -199,21 +201,33 @@ jobs:
             echo "${output}=${value}" >> "$GITHUB_OUTPUT"
           done
 
-      # release-desktop.yml downloads `js-bundle` from its own run, so the PR
-      # build's bundle is re-published under this run. It is copied as data
-      # and never executed here.
-      - name: Download PR JS bundle
+      # Only the default-branch revision that owns this workflow supplies the
+      # validator. Never check out the PR in a workflow_run job.
+      - name: Checkout trusted artifact validator
         if: steps.gate.outputs.eligible == 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          name: js-bundle
-          path: ${{ runner.temp }}/js-bundle
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ github.event.workflow_run.id }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
 
+      # Fetch the archive as bytes. Extracting it over the checkout, even with
+      # download-artifact, could replace code that runs with signing secrets.
+      - name: Download and validate PR JS bundle
+        if: steps.gate.outputs.eligible == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.pr.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > "$RUNNER_TEMP/js-bundle.zip"
+          python3 .github/scripts/stage-preview-bundle.py "$RUNNER_TEMP/js-bundle.zip" "$RUNNER_TEMP/js-bundle"
+
+      # Only validated bundle files cross into the signing job's artifact.
       - name: Stage JS bundle for packaging
         if: steps.gate.outputs.eligible == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: js-bundle
           path: ${{ runner.temp }}/js-bundle
@@ -230,10 +244,16 @@ jobs:
       group: desktop-macos-preview-${{ needs.resolve.outputs.pr_number }}-build
       cancel-in-progress: true
     uses: ./.github/workflows/release-desktop.yml
-    secrets: inherit
+    secrets:
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
     with:
       version: ${{ needs.resolve.outputs.version }}
-      ref: ${{ github.event.repository.default_branch }}
+      ref: ${{ github.sha }}
       release_channel: preview
       relay_client_tracing: false
       clerk_publishable_key: ${{ needs.resolve.outputs.clerk_publishable_key }}
@@ -270,7 +290,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Download macOS artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: desktop-mac-arm64
           path: release
@@ -362,7 +382,7 @@ jobs:
 
       - name: Comment download link
         if: steps.upload.outputs.download_url != ''
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
           DOWNLOAD_URL: ${{ steps.upload.outputs.download_url }}
@@ -406,7 +426,9 @@ jobs:
               issue_number: prNumber,
               per_page: 100,
             });
-            const existing = comments.find((comment) => comment.body?.includes(marker));
+            const existing = comments.find(
+              (comment) => comment.user?.login === "github-actions[bot]" && comment.body?.includes(marker),
+            );
 
             if (existing) {
               await github.rest.issues.updateComment({
@@ -479,7 +501,7 @@ jobs:
 
       - name: Mark the preview comment as removed
         if: steps.delete.outputs.removed == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const marker = "<!-- desktop-macos-preview -->";
@@ -489,7 +511,9 @@ jobs:
               issue_number: context.payload.pull_request.number,
               per_page: 100,
             });
-            const existing = comments.find((comment) => comment.body?.includes(marker));
+            const existing = comments.find(
+              (comment) => comment.user?.login === "github-actions[bot]" && comment.body?.includes(marker),
+            );
             if (!existing) {
               return;
             }
