@@ -205,11 +205,19 @@ jobs:
       # validator. Never check out the PR in a workflow_run job.
       - name: Checkout trusted artifact validator
         if: steps.gate.outputs.eligible == 'true'
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-          sparse-checkout: .github/scripts
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        # Anonymous fetch avoids checkout's credential cleanup, which fails on
+        # orphaned gitlinks in .repos even when that directory is excluded.
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
+          git sparse-checkout set .github/scripts
+          git checkout --detach FETCH_HEAD
 
       # Fetch the archive as bytes. Extracting it over the checkout, even with
       # download-artifact, could replace code that runs with signing secrets.
