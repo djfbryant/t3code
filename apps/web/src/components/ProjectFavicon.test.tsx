@@ -188,12 +188,12 @@ describe("ProjectFavicon", () => {
     });
   });
 
-  it("uses hash colors and a white glyph for missing favicons in automatic mode", async () => {
+  it("uses the project color and current color for missing favicons in automatic mode", async () => {
     testState.projectMonogramColor = "auto";
     const monogram = await renderMissingImageMonogram("analytics-db");
 
-    expect(monogram.backgroundColor).toContain("hsl(");
-    expect(monogram.fill).toBe("white");
+    expect(monogram.backgroundColor).toContain("color-mix");
+    expect(monogram.fill).toBe("currentColor");
   });
 
   it("uses the theme action color for missing favicons in accent mode", async () => {
@@ -201,7 +201,6 @@ describe("ProjectFavicon", () => {
     const monogram = await renderMissingImageMonogram("analytics-db");
 
     expect(monogram.backgroundColor).toBe("var(--primary)");
-    expect(monogram.backgroundImage).toContain("var(--primary)");
     expect(monogram.fill).toBe("var(--primary-foreground)");
   });
 

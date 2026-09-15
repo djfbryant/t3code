@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { PROJECT_ICON_COLORS } from "./projectIconColors";
 import { deriveProjectIdentity } from "./projectIdentity";
 
 describe("deriveProjectIdentity", () => {
@@ -18,40 +19,23 @@ describe("deriveProjectIdentity", () => {
     const canonical = deriveProjectIdentity("Nebula");
     const equivalent = deriveProjectIdentity("  NEBULA  ");
 
-    expect(equivalent.background).toBe(canonical.background);
-    expect(equivalent.highlight).toBe(canonical.highlight);
+    expect(equivalent.color).toBe(canonical.color);
+  });
+
+  it("uses only colors available in the icon picker", () => {
+    const palette = PROJECT_ICON_COLORS.map(({ value }) => value);
+    for (const name of ["Jobs", "Scripts and Extractors", "T3", "文書", "", "---"]) {
+      expect(palette).toContain(deriveProjectIdentity(name).color);
+    }
   });
 
   it("generates different hues for different project names", () => {
     const colors = new Set(
       ["Nebula", "M7 Forge", "Silver Orchard", "Blue Harbor", "Copper Finch", "Juniper Vale"].map(
-        (projectName) => deriveProjectIdentity(projectName).background,
+        (projectName) => deriveProjectIdentity(projectName).color,
       ),
     );
 
     expect(colors.size).toBeGreaterThan(1);
-  });
-
-  it("preserves hash colors when the color is omitted or automatic", () => {
-    const omitted = deriveProjectIdentity("Nebula");
-    const automatic = deriveProjectIdentity("Nebula", "auto");
-
-    expect(automatic.background).toBe(omitted.background);
-    expect(automatic.highlight).toBe(omitted.highlight);
-    expect(automatic.monogram).toBe(omitted.monogram);
-  });
-
-  it("uses the theme action color for both backgrounds in accent mode", () => {
-    const identity = deriveProjectIdentity("Nebula", "accent");
-
-    expect(identity.background).toBe("var(--primary)");
-    expect(identity.highlight).toBe("var(--primary)");
-  });
-
-  it("keeps the monogram glyph unchanged in accent mode", () => {
-    expect(deriveProjectIdentity("Nebula", "accent").monogram).toBe(
-      deriveProjectIdentity("Nebula").monogram,
-    );
-    expect(deriveProjectIdentity("m7forge", "accent").monogram).toBe("M7");
   });
 });
