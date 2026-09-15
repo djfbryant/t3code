@@ -94,6 +94,10 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.pullRequestsRequestReviewers]: AuthOrchestrationOperateScope,
   [WS_METHODS.pullRequestsLabelCandidates]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsSetLabels]: AuthOrchestrationOperateScope,
+  // The tracker is read-only, so every one of its reads — including the refresh — is a read.
+  [WS_METHODS.issuesList]: AuthOrchestrationReadScope,
+  [WS_METHODS.issuesDetail]: AuthOrchestrationReadScope,
+  [WS_METHODS.issuesInvalidate]: AuthOrchestrationReadScope,
   [WS_METHODS.sourceControlLookupRepository]: AuthOrchestrationReadScope,
   [WS_METHODS.sourceControlCloneRepository]: AuthOrchestrationOperateScope,
   [WS_METHODS.sourceControlPublishRepository]: AuthOrchestrationOperateScope,
