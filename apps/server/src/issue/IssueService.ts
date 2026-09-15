@@ -148,6 +148,14 @@ export const make = Effect.gen(function* () {
       return { project: shell, host: pullRequestHostOf(identity, "github"), repository };
     });
 
+  // The cursor is this service's own encoding: the GitHub REST page to carry on from.
+  // Both directions live here so no other module parses or fabricates one.
+  const cursorToPage = (cursor: string | undefined): number => {
+    const page = cursor === undefined ? NaN : Number.parseInt(cursor, 10);
+    return Number.isFinite(page) && page >= 1 ? page : 1;
+  };
+  const pageToCursor = (page: number): string => String(page);
+
   const listUncached = (input: IssueListInput): Effect.Effect<IssueListResult, IssueError> =>
     Effect.gen(function* () {
       const target = yield* resolveTarget(input);
@@ -159,7 +167,7 @@ export const make = Effect.gen(function* () {
           repository: target.repository,
           state: input.state,
           perPage: limit,
-          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+          page: cursorToPage(input.cursor),
         })
         .pipe(Effect.mapError(toIssueError(target)));
       return {
@@ -171,9 +179,7 @@ export const make = Effect.gen(function* () {
           repository: target.repository,
         })),
         truncated: rows.truncated,
-        nextCursor: rows.truncated
-          ? String((input.cursor === undefined ? 1 : Number.parseInt(input.cursor, 10)) + 1)
-          : null,
+        nextCursor: rows.nextPage === null ? null : pageToCursor(rows.nextPage),
       };
     });
 

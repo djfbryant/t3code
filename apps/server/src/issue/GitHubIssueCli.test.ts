@@ -78,12 +78,14 @@ describe("GitHubIssueCli", () => {
             repository: "acme/web",
             state: "all",
             perPage: 30,
+            page: 1,
           }),
         ),
       );
 
       expect(answer.rows.map((row) => row.number)).toEqual([12, 13]);
       expect(answer.truncated).toBe(false);
+      expect(answer.nextPage).toBeNull();
       // The author of the second row reports no avatar; the row carries null, not a guess.
       expect(answer.rows[1]?.author).toBeNull();
       expect(answer.rows[0]?.labels).toEqual([{ name: "bug", color: "d73a4a" }]);
@@ -112,18 +114,52 @@ describe("GitHubIssueCli", () => {
             repository: "acme/web",
             state: "open",
             perPage: 30,
-            cursor: "2",
+            page: 2,
           }),
         ),
       );
 
       expect(answer.rows).toHaveLength(30);
       expect(answer.truncated).toBe(true);
+      expect(answer.nextPage).toBe(3);
       expect(answer.rows[0]?.number).toBe(1);
-      // The cursor is the page to fetch: the server hands back the page after the one
-      // the client has, so cursor "2" is GitHub's second page.
       expect(api.calls[0]?.join(" ")).toContain("-f page=2");
       expect(api.calls[0]?.join(" ")).toContain("-f per_page=31");
+    }),
+  );
+
+  it.effect("keeps reading past change-request rows so the page is not short", () =>
+    Effect.gen(function* () {
+      // The first REST page loses its issue rows to change requests — 30 of them plus one
+      // issue — so the walk reads the next page rather than answering short and silently
+      // hiding what follows.
+      const firstPage = [
+        ...Array.from({ length: 30 }, () => changeRequestJson()),
+        issueJson({ number: 1 }),
+      ];
+      const secondPage = Array.from({ length: 31 }, (_, index) =>
+        issueJson({ number: index + 100 }),
+      );
+      const api = runWithResponses([firstPage, secondPage]);
+      const answer = yield* api.cli.pipe(
+        Effect.flatMap((cli) =>
+          cli.list({
+            cwd: "/w",
+            host: "github.com",
+            repository: "acme/web",
+            state: "open",
+            perPage: 30,
+            page: 1,
+          }),
+        ),
+      );
+
+      expect(answer.truncated).toBe(true);
+      expect(answer.rows).toHaveLength(30);
+      expect(answer.nextPage).toBe(3);
+      // The walk read two REST pages: the first, and the one that proved there was more.
+      expect(api.calls).toHaveLength(2);
+      expect(api.calls[1]?.join(" ")).toContain("-f page=2");
     }),
   );
 
@@ -163,8 +199,8 @@ describe("GitHubIssueCli", () => {
 
   it.effect("refuses a repository name it cannot address", () =>
     Effect.sync(() => {
-      expect(() => GitHubIssueCli.parseIssueRepositorySelector("acme")).toThrow();
-      expect(() => GitHubIssueCli.parseIssueRepositorySelector("acme/web/extra")).toThrow();
+      expect(GitHubIssueCli.parseIssueRepositorySelector("acme")).toBeNull();
+      expect(GitHubIssueCli.parseIssueRepositorySelector("acme/web/extra")).toBeNull();
       expect(GitHubIssueCli.parseIssueRepositorySelector("acme/web")).toEqual({
         owner: "acme",
         name: "web",

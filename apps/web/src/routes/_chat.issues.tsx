@@ -49,11 +49,23 @@ import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { isElectron } from "../env";
 
-const PAGE_STEP = 30;
+const PAGE_SIZE = 30;
 const STATE_TABS = [
   { value: "open", label: "Open" },
   { value: "closed", label: "Closed" },
 ] as const;
+
+/** The cursor of a listing page; null is the first page. */
+type PageCursor = string | null;
+
+function issueListInput(projectId: ProjectId, state: IssueListInput["state"], cursor: PageCursor) {
+  return {
+    projectId,
+    state,
+    limit: PAGE_SIZE,
+    ...(cursor === null ? {} : { cursor }),
+  } satisfies IssueListInput;
+}
 
 export const Route = createFileRoute("/_chat/issues")({
   component: IssuesRoute,
@@ -76,8 +88,17 @@ function IssuesRoute() {
 
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [state, setState] = useState<IssueListInput["state"]>("open");
-  const [limit, setLimit] = useState(PAGE_STEP);
   const [selectedNumber, setSelectedNumber] = useState<number | null>(null);
+  // One entry per loaded page, in order. The cursor of page N is what page N-1 answered
+  // with, so a page is appended only when its predecessor's answer is on screen.
+  const [pages, setPages] = useState<ReadonlyArray<PageCursor>>([null]);
+  // What the first page answered with, so the parent can swap the whole list for an
+  // error or an empty view without reaching into the page's own query.
+  const [firstPage, setFirstPage] = useState<{
+    error: string | null;
+    empty: boolean;
+    pending: boolean;
+  } | null>(null);
 
   const project =
     selectedProjectId === null ||
@@ -85,24 +106,28 @@ function IssuesRoute() {
       ? (issueProjects[0] ?? null)
       : (issueProjects.find((candidate) => candidate.id === selectedProjectId) ?? null);
 
-  const selectProject = useCallback((nextProjectId: string) => {
-    setSelectedProjectId(nextProjectId);
-    setLimit(PAGE_STEP);
+  const resetList = useCallback(() => {
+    setPages([null]);
+    setFirstPage(null);
     setSelectedNumber(null);
   }, []);
 
+  const selectProject = useCallback(
+    (nextProjectId: string) => {
+      setSelectedProjectId(nextProjectId);
+      resetList();
+    },
+    [resetList],
+  );
+
   const environmentId: EnvironmentId | null = project?.environmentId ?? null;
   const projectId: ProjectId | null = project?.id ?? null;
-  const listInput: IssueListInput | null =
-    project === null ? null : { projectId: project.id, state, limit };
-
-  const { data, error, isPending } = useIssueList(environmentId, listInput);
 
   const invalidate = useAtomCommand(issueEnvironment.invalidate, { reportFailure: false });
   const [invalidating, setInvalidating] = useState(false);
   const [detailRefreshToken, setDetailRefreshToken] = useState(0);
-  // The header's refresh punches through the server's cache before re-reading; the same
-  // shape the pull-request page makes, minus the stats and partitions it has to sweep.
+  // The header's refresh punches through the server's cache before re-reading every page
+  // the list has accumulated; the same shape the pull-request page makes.
   const refreshFromHost = async () => {
     if (environmentId === null || projectId === null) return;
     setInvalidating(true);
@@ -111,22 +136,24 @@ function IssuesRoute() {
     } finally {
       setInvalidating(false);
     }
-    appAtomRegistry.refresh(
-      issueEnvironment.list({
-        environmentId,
-        input: { projectId, state, limit },
-      }),
-    );
+    for (const cursor of pages) {
+      appAtomRegistry.refresh(
+        issueEnvironment.list({
+          environmentId,
+          input: issueListInput(projectId, state, cursor),
+        }),
+      );
+    }
     setDetailRefreshToken((token) => token + 1);
   };
 
-  const refreshing = invalidating || isPending;
+  const refreshing = invalidating;
   const detailOpen = selectedNumber !== null && project !== null;
   const changeState = (next: IssueListInput["state"]) => {
+    // The pages were read for the previous filter and the selected issue may not exist on
+    // the other side of the list, so both start over.
+    resetList();
     setState(next);
-    // The selected issue may not exist in the other side of the list; a pane showing an
-    // issue the list can no longer show reads as a stale page.
-    setSelectedNumber(null);
   };
 
   return (
@@ -191,9 +218,6 @@ function IssuesRoute() {
                         </Toggle>
                       ))}
                     </ToggleGroup>
-                    {refreshing && data === null ? (
-                      <Spinner className="text-muted-foreground" />
-                    ) : null}
                   </WorkspaceBreadcrumbItem>
                 </>
               )}
@@ -231,55 +255,128 @@ function IssuesRoute() {
               refreshToken={detailRefreshToken}
             />
           </WorkspacePageContainer>
-        ) : (
+        ) : projectId !== null && environmentId !== null ? (
           <WorkspacePageContainer width="expanded" className="min-h-full gap-4">
-            <div className="flex min-w-0 flex-col gap-1">
-              <IssueListBody
-                data={data}
-                error={error}
-                isPending={isPending}
-                state={state}
-                selectedNumber={selectedNumber}
-                onSelect={setSelectedNumber}
-                onRetry={() => {
-                  if (environmentId === null || listInput === null) return;
+            {firstPage !== null && firstPage.error !== null ? (
+              <IssuesUnavailableState
+                error={firstPage.error}
+                onRetry={() =>
                   appAtomRegistry.refresh(
-                    issueEnvironment.list({ environmentId, input: listInput }),
-                  );
-                }}
-                onLoadMore={() => setLimit((current) => current + PAGE_STEP)}
+                    issueEnvironment.list({
+                      environmentId,
+                      input: issueListInput(projectId, state, null),
+                    }),
+                  )
+                }
+                refreshing={firstPage.pending}
               />
-            </div>
+            ) : firstPage !== null && firstPage.empty && !firstPage.pending ? (
+              <IssueListEmptyState state={state} />
+            ) : (
+              <ul className="overflow-hidden rounded-xl border">
+                {pages.map((cursor, index) => (
+                  <IssueListPage
+                    key={cursor ?? "first-page"}
+                    environmentId={environmentId}
+                    projectId={projectId}
+                    state={state}
+                    cursor={cursor}
+                    isFirst={index === 0}
+                    isLast={index === pages.length - 1}
+                    selectedNumber={selectedNumber}
+                    onSelect={setSelectedNumber}
+                    onStatus={index === 0 ? setFirstPage : undefined}
+                    onLoadMore={(nextCursor) => setPages((current) => [...current, nextCursor])}
+                  />
+                ))}
+              </ul>
+            )}
           </WorkspacePageContainer>
-        )}
+        ) : null}
       </div>
     </div>
   );
 }
 
-function IssueListBody({
-  data,
-  error,
-  isPending,
+function IssueListEmptyState({ state }: { state: IssueListInput["state"] }) {
+  return (
+    <Empty className="py-16">
+      <EmptyMedia variant="icon">
+        <CircleDotIcon />
+      </EmptyMedia>
+      <EmptyHeader>
+        <EmptyTitle>{state === "open" ? "No open issues" : "No closed issues"}</EmptyTitle>
+        <EmptyDescription>
+          {state === "open"
+            ? "Everything this repository has filed is closed. New issues appear here as they arrive."
+            : "Nothing has been closed yet."}
+        </EmptyDescription>
+      </EmptyHeader>
+    </Empty>
+  );
+}
+
+/**
+ * One cursor page of the list, rendered as the <li> rows of the shared list so the pages
+ * read as one. The last page carries the load-more control: only it knows whether the
+ * host has more, from its own answer. The first page reports its state up, so the parent
+ * can swap the whole list for an error or empty view.
+ */
+function IssueListPage({
+  environmentId,
+  projectId,
   state,
+  cursor,
+  isFirst,
+  isLast,
   selectedNumber,
   onSelect,
-  onRetry,
+  onStatus,
   onLoadMore,
 }: {
-  data: IssueListResult | null;
-  error: string | null;
-  isPending: boolean;
+  environmentId: EnvironmentId;
+  projectId: ProjectId;
   state: IssueListInput["state"];
+  cursor: PageCursor;
+  isFirst: boolean;
+  isLast: boolean;
   selectedNumber: number | null;
   onSelect: (number: number) => void;
-  onRetry: () => void;
-  onLoadMore: () => void;
+  onStatus:
+    | ((status: { error: string | null; empty: boolean; pending: boolean }) => void)
+    | undefined;
+  onLoadMore: (nextCursor: string) => void;
 }) {
+  const input = useMemo(() => issueListInput(projectId, state, cursor), [projectId, state, cursor]);
+  const { data, error, isPending } = useIssueList(environmentId, input);
+
+  const status = useMemo(
+    () => ({
+      error,
+      empty: data !== null && data.entries.length === 0,
+      pending: isPending,
+    }),
+    [error, data, isPending],
+  );
+  useEffect(() => {
+    if (onStatus === undefined) return;
+    onStatus(status);
+  }, [onStatus, status]);
+
   if (error !== null) {
-    return <IssuesUnavailableState error={error} onRetry={onRetry} refreshing={isPending} />;
+    // The parent renders the first page's error full-page; a later page's failure just
+    // stops its rows, and the last successful page's load-more stays available.
+    if (!isFirst) return null;
+    return (
+      <li className="flex items-center justify-center py-3">
+        <Spinner className="text-muted-foreground" />
+      </li>
+    );
   }
   if (data === null) {
+    // The first page loading is the page's own spinner; a later page is quiet while it
+    // arrives, so the rows above do not jump.
+    if (!isFirst) return null;
     return (
       <Empty className="py-16">
         <Spinner className="text-muted-foreground" />
@@ -287,41 +384,39 @@ function IssueListBody({
     );
   }
   if (data.entries.length === 0) {
+    if (!isFirst) return null;
     return (
       <Empty className="py-16">
-        <EmptyMedia variant="icon">
-          <CircleDotIcon />
-        </EmptyMedia>
-        <EmptyHeader>
-          <EmptyTitle>{state === "open" ? "No open issues" : "No closed issues"}</EmptyTitle>
-          <EmptyDescription>
-            {state === "open"
-              ? "Everything this repository has filed is closed. New issues appear here as they arrive."
-              : "Nothing has been closed yet."}
-          </EmptyDescription>
-        </EmptyHeader>
+        <Spinner className="text-muted-foreground" />
       </Empty>
     );
   }
   return (
     <>
-      <ul className="overflow-hidden rounded-xl border">
-        {data.entries.map((entry) => (
-          <li key={entry.number}>
-            <IssueRow
-              entry={entry}
-              selected={entry.number === selectedNumber}
-              onSelect={() => onSelect(entry.number)}
-            />
-          </li>
-        ))}
-      </ul>
-      {data.truncated ? (
-        <div className="flex justify-center py-2">
-          <Button size="sm" variant="outline" onClick={onLoadMore} disabled={isPending}>
+      {data.entries.map((entry) => (
+        <li key={entry.number}>
+          <IssueRow
+            entry={entry}
+            selected={entry.number === selectedNumber}
+            onSelect={() => onSelect(entry.number)}
+          />
+        </li>
+      ))}
+      {isLast && data.truncated && data.nextCursor !== null ? (
+        <li className="flex justify-center border-b py-2 last:border-b-0">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPending}
+            aria-busy={isPending}
+            onClick={() => {
+              const nextCursor = data.nextCursor;
+              if (nextCursor !== null) onLoadMore(nextCursor);
+            }}
+          >
             Load more
           </Button>
-        </div>
+        </li>
       ) : null}
     </>
   );

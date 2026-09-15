@@ -11,7 +11,8 @@ import type { EnvironmentRegistry } from "../connection/registry.ts";
 /**
  * The tracker's reads, one family per shape. Each query revalidates on its own slow interval —
  * that is what "live" means for data that changes on the host rather than in this app — and an
- * atom only lives while a view holds it, so the interval costs nothing once the page is closed.
+ * atom dies a few minutes after the last view holding it unmounts, which is what bounds the
+ * polling to the time a tracker view is actually open.
  */
 export function createIssueEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -27,12 +28,14 @@ export function createIssueEnvironmentAtoms<R, E>(
       tag: WS_METHODS.issuesList,
       staleTimeMs: 30_000,
       refreshIntervalMs: 60_000,
+      idleTtlMs: 90_000,
     }),
     detail: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:issues:detail",
       tag: WS_METHODS.issuesDetail,
       staleTimeMs: 30_000,
       refreshIntervalMs: 60_000,
+      idleTtlMs: 90_000,
     }),
     invalidate: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:issues:invalidate",

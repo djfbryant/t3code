@@ -107,16 +107,15 @@ function rowOf(raw: Schema.Schema.Type<typeof RawIssue>): GitHubIssueRow {
   };
 }
 
-/** A repository name that cannot be addressed as itself is refused rather than escaped. */
-export function parseIssueRepositorySelector(repository: string): {
-  readonly owner: string;
-  readonly name: string;
-} {
+/** A repository name that cannot be addressed as itself is refused, not escaped. */
+export function parseIssueRepositorySelector(
+  repository: string,
+): { readonly owner: string; readonly name: string } | null {
   const match = /^([^/]+)\/([^/]+)$/.exec(repository.trim());
   const owner = match?.[1];
   const name = match?.[2];
   if (owner === undefined || name === undefined || owner.length === 0 || name.length === 0) {
-    throw new Error(`Repository '${repository}' cannot be addressed on GitHub.`);
+    return null;
   }
   return { owner, name };
 }
@@ -135,10 +134,15 @@ export class GitHubIssueCli extends Context.Service<
       readonly repository: string;
       readonly state: IssueListState;
       readonly perPage: number;
-      /** Where the last answer stopped, as one of this CLI's own cursors. Absent is page one. */
-      readonly cursor?: string | undefined;
+      /** The REST page to read first, as the service converts its cursor. One-based. */
+      readonly page: number;
     }) => Effect.Effect<
-      { readonly rows: ReadonlyArray<GitHubIssueRow>; readonly truncated: boolean },
+      {
+        readonly rows: ReadonlyArray<GitHubIssueRow>;
+        readonly truncated: boolean;
+        /** The REST page to carry on from, set only when `truncated` is true. */
+        readonly nextPage: number | null;
+      },
       GitHubIssueReadError
     >;
 
@@ -212,75 +216,115 @@ export const make = Effect.gen(function* () {
         ),
       );
 
-  const list: GitHubIssueCli["Service"]["list"] = (input) => {
-    const { owner, name } = parseIssueRepositorySelector(input.repository);
-    const cursorPage = input.cursor === undefined ? undefined : Number.parseInt(input.cursor, 10);
-    const page =
-      cursorPage === undefined || !Number.isFinite(cursorPage) || cursorPage < 1 ? 1 : cursorPage;
-    // One row over the page size is what tells the caller whether to offer a next page.
-    return ghApi({
-      cwd: input.cwd,
-      host: input.host,
-      endpoint: `repos/${owner}/${name}/issues`,
-      fields: [
-        ["state", input.state],
-        ["sort", "created"],
-        ["direction", "desc"],
-        ["per_page", String(input.perPage + 1)],
-        ["page", String(page)],
-      ],
-    }).pipe(
-      Effect.flatMap(decodeJson("list")(Schema.decodeEffect(Schema.fromJsonString(RawIssueList)))),
-      Effect.map((raw) => {
-        const issues = raw.filter((issue) => issue.pull_request === undefined);
-        return {
-          rows: issues.slice(0, input.perPage).map(rowOf),
-          truncated: issues.length > input.perPage,
-        };
-      }),
-    );
-  };
+  /**
+   * The issues endpoint also carries change requests, so a raw page can lose issue rows to
+   * them. The walk keeps reading REST pages until it holds one issue past the page size —
+   * which is how it knows more follow — or the host runs short. Three requests bound the
+   * walk; a repository that displaces that many issues with change requests at the head of
+   * its listing answers short rather than lying about there being more.
+   */
+  const list: GitHubIssueCli["Service"]["list"] = Effect.fn("GitHubIssueCli.list")(
+    function* (input) {
+      const selector = parseIssueRepositorySelector(input.repository);
+      if (selector === null) {
+        return yield* new GitHubIssueReadError({
+          operation: "list",
+          detail: `Repository '${input.repository}' cannot be addressed on GitHub.`,
+        });
+      }
+      const { owner, name } = selector;
+      const readRestPage = (page: number) =>
+        ghApi({
+          cwd: input.cwd,
+          host: input.host,
+          endpoint: `repos/${owner}/${name}/issues`,
+          fields: [
+            ["state", input.state],
+            ["sort", "created"],
+            ["direction", "desc"],
+            ["per_page", String(input.perPage + 1)],
+            ["page", String(page)],
+          ],
+        }).pipe(
+          Effect.flatMap(
+            decodeJson("list")(Schema.decodeEffect(Schema.fromJsonString(RawIssueList))),
+          ),
+        );
 
-  const detail: GitHubIssueCli["Service"]["detail"] = (input) => {
-    const { owner, name } = parseIssueRepositorySelector(input.repository);
-    const issueRead = ghApi({
-      cwd: input.cwd,
-      host: input.host,
-      endpoint: `repos/${owner}/${name}/issues/${input.number}`,
-      fields: [],
-    }).pipe(
-      Effect.flatMap(decodeJson("detail")(Schema.decodeEffect(Schema.fromJsonString(RawIssue)))),
-    );
-    const commentsRead = ghApi({
-      cwd: input.cwd,
-      host: input.host,
-      endpoint: `repos/${owner}/${name}/issues/${input.number}/comments`,
-      fields: [["per_page", String(COMMENTS_PER_PAGE)]],
-    }).pipe(
-      Effect.flatMap(
-        decodeJson("detail-comments")(
-          Schema.decodeEffect(Schema.fromJsonString(RawIssueCommentList)),
+      let filtered: Schema.Schema.Type<typeof RawIssue>[] = [];
+      let restPage = input.page;
+      for (let requestsLeft = 3; ; requestsLeft--) {
+        const raw = yield* readRestPage(restPage);
+        filtered = filtered.concat(raw.filter((issue) => issue.pull_request === undefined));
+        if (filtered.length > input.perPage) {
+          return {
+            rows: filtered.slice(0, input.perPage).map(rowOf),
+            truncated: true,
+            nextPage: restPage + 1,
+          };
+        }
+        // The host ran out before the page filled: what the walk holds is all there is.
+        if (raw.length < input.perPage + 1 || requestsLeft <= 1) {
+          return {
+            rows: filtered.slice(0, input.perPage).map(rowOf),
+            truncated: false,
+            nextPage: null,
+          };
+        }
+        restPage += 1;
+      }
+    },
+  );
+
+  const detail: GitHubIssueCli["Service"]["detail"] = Effect.fn("GitHubIssueCli.detail")(
+    function* (input) {
+      const selector = parseIssueRepositorySelector(input.repository);
+      if (selector === null) {
+        return yield* new GitHubIssueReadError({
+          operation: "detail",
+          detail: `Repository '${input.repository}' cannot be addressed on GitHub.`,
+        });
+      }
+      const { owner, name } = selector;
+      const issueRead = ghApi({
+        cwd: input.cwd,
+        host: input.host,
+        endpoint: `repos/${owner}/${name}/issues/${input.number}`,
+        fields: [],
+      }).pipe(
+        Effect.flatMap(decodeJson("detail")(Schema.decodeEffect(Schema.fromJsonString(RawIssue)))),
+      );
+      const commentsRead = ghApi({
+        cwd: input.cwd,
+        host: input.host,
+        endpoint: `repos/${owner}/${name}/issues/${input.number}/comments`,
+        fields: [["per_page", String(COMMENTS_PER_PAGE)]],
+      }).pipe(
+        Effect.flatMap(
+          decodeJson("detail-comments")(
+            Schema.decodeEffect(Schema.fromJsonString(RawIssueCommentList)),
+          ),
         ),
-      ),
-    );
-    return Effect.all([issueRead, commentsRead], { concurrency: 2 }).pipe(
-      Effect.map(([rawIssue, rawComments]) => {
-        const row = rowOf(rawIssue);
-        return {
-          ...row,
-          body: rawIssue.body ?? "",
-          comments: rawComments.slice(0, COMMENTS_PER_PAGE).map((comment) => ({
-            id: String(comment.id),
-            author: actorOf(comment.user),
-            body: comment.body,
-            createdAt: comment.created_at,
-            url: comment.html_url ?? null,
-          })),
-          commentsTruncated: row.commentCount > rawComments.length,
-        };
-      }),
-    );
-  };
+      );
+      return yield* Effect.all([issueRead, commentsRead], { concurrency: 2 }).pipe(
+        Effect.map(([rawIssue, rawComments]) => {
+          const row = rowOf(rawIssue);
+          return {
+            ...row,
+            body: rawIssue.body ?? "",
+            comments: rawComments.slice(0, COMMENTS_PER_PAGE).map((comment) => ({
+              id: String(comment.id),
+              author: actorOf(comment.user),
+              body: comment.body,
+              createdAt: comment.created_at,
+              url: comment.html_url ?? null,
+            })),
+            commentsTruncated: row.commentCount > rawComments.length,
+          };
+        }),
+      );
+    },
+  );
 
   return GitHubIssueCli.of({ list, detail });
 });
